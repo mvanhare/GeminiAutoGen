@@ -27,6 +27,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   let startTime = 0;
   let currentTabId = null;
 
+  // Retry State
+  let taskRetryCount = new Map(); // Track retry attempts per task index
+  let retrySettings = {
+    maxRetries: 3,
+    retryDelay: 5,
+    continueOnError: true
+  };
+
   // Settings Button
   settingsBtn.addEventListener("click", () => {
     chrome.runtime.sendMessage({ action: "OPEN_OPTIONS" });
@@ -117,6 +125,16 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
+    // Load retry settings
+    const settings = await chrome.storage.local.get([
+      'settings_maxRetries',
+      'settings_retryDelay',
+      'settings_continueOnError'
+    ]);
+    retrySettings.maxRetries = settings.settings_maxRetries !== undefined ? settings.settings_maxRetries : 3;
+    retrySettings.retryDelay = settings.settings_retryDelay || 5;
+    retrySettings.continueOnError = settings.settings_continueOnError !== undefined ? settings.settings_continueOnError : true;
+
     // Determine which URL to use
     if (lockedConversationUrl) {
       // Use locked URL
@@ -187,6 +205,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // Start
     currentIndex = 0;
+    taskRetryCount.clear(); // Clear retry counters
     isRunning = true;
     updateUI(true);
     startTimer();
@@ -215,6 +234,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     currentIndex = 0;
     conversationUrl = "";
     currentTabId = null;
+    taskRetryCount.clear();
 
     // Clear storage
     await chrome.storage.local.clear();
@@ -309,6 +329,10 @@ document.addEventListener("DOMContentLoaded", async () => {
           request.skipped
         })`
       );
+
+      // Clear retry counter for completed task
+      taskRetryCount.delete(currentIndex);
+
       currentIndex++;
 
       // Update remaining time estimate after each task completes
@@ -324,12 +348,74 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (request.action === "TASK_ERROR") {
-      console.error(`[Panel] Task error: ${request.error}`);
-      statusText.textContent = `Error: ${request.error}`;
-      statusText.style.color = "red";
-      isRunning = false;
-      stopTimer();
-      updateUI(false);
+      console.error(`[Panel] Task error: ${request.error} (Type: ${request.errorType})`);
+
+      // Get current retry count for this task
+      const retryCount = taskRetryCount.get(currentIndex) || 0;
+      const taskName = taskQueue[currentIndex]?.name || "Unknown";
+
+      // Check if error is fatal or if we've exceeded max retries
+      const isFatalError = request.errorType === "FATAL";
+      const shouldRetry = !isFatalError && retryCount < retrySettings.maxRetries;
+
+      if (shouldRetry) {
+        // Increment retry counter
+        taskRetryCount.set(currentIndex, retryCount + 1);
+
+        // Calculate exponential backoff delay
+        const retryDelaySeconds = retrySettings.retryDelay * Math.pow(2, retryCount);
+
+        console.log(
+          `[Panel] Retrying task ${currentIndex + 1} (${taskName}) - Attempt ${retryCount + 1}/${retrySettings.maxRetries}`
+        );
+        statusText.textContent = `Retrying in ${retryDelaySeconds}s... (Attempt ${retryCount + 1}/${retrySettings.maxRetries})`;
+        statusText.style.color = "#ff9800"; // Orange for retry
+
+        // Wait for exponential backoff delay, then retry
+        setTimeout(async () => {
+          if (!isRunning) return;
+
+          statusText.textContent = `Retrying task ${currentIndex + 1}...`;
+          // Recreate tab and retry the same task
+          await recreateTab();
+        }, retryDelaySeconds * 1000);
+      } else {
+        // Max retries exceeded or fatal error
+        const reason = isFatalError ? "Fatal error" : "Max retries exceeded";
+        console.error(
+          `[Panel] ${reason} for task ${currentIndex + 1} (${taskName}): ${request.error}`
+        );
+
+        if (retrySettings.continueOnError) {
+          // Skip this task and continue with the next one
+          statusText.textContent = `Skipped (${reason}): ${taskName}`;
+          statusText.style.color = "#ff5722"; // Red-orange for skipped
+
+          // Clear retry counter for this task
+          taskRetryCount.delete(currentIndex);
+
+          // Move to next task
+          currentIndex++;
+
+          if (currentIndex < taskQueue.length && isRunning) {
+            // Brief delay before next task
+            setTimeout(async () => {
+              if (!isRunning) return;
+              await recreateTab();
+            }, 2000);
+          } else {
+            // All done
+            processNextTask();
+          }
+        } else {
+          // Stop the entire workflow
+          statusText.textContent = `Stopped: ${request.error}`;
+          statusText.style.color = "red";
+          isRunning = false;
+          stopTimer();
+          updateUI(false);
+        }
+      }
     }
 
     if (request.action === "UPDATE_STATUS") {
