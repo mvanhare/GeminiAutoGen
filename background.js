@@ -110,6 +110,16 @@ async function calculateFileHash(arrayBuffer) {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Helper: Run a promise with timeout
+async function withTimeout(promise, timeoutMs, errorMessage) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
+    )
+  ]);
+}
+
 async function waitForDownloadAndRename(targetFilename) {
   const sourceHandle = await getSourceHandle();
   const outputHandle = await getOutputHandle();
@@ -136,7 +146,7 @@ async function waitForDownloadAndRename(targetFilename) {
   // 2. Poll for new file
   const startTime = Date.now();
   const timeout = downloadTimeoutSeconds * 1000; // Convert to ms
-  const interval = 2000; // 2 seconds
+  const interval = 1000; // 1 second (reduced for faster detection)
 
   while (Date.now() - startTime < timeout) {
     // Check for file FIRST (before waiting), so we detect immediately
@@ -156,9 +166,27 @@ async function waitForDownloadAndRename(targetFilename) {
       // 3. Wait for file size to stabilize (download complete)
       let lastSize = 0;
       let stableCount = 0;
+      const stabilityStartTime = Date.now();
+      const stabilityTimeout = 30000; // 30 second max for stability check
+      const maxStabilityRetries = 10;
+      let retryCount = 0;
 
       while (stableCount < 3) { // 3 consecutive same-size checks
+        // Check if we've exceeded the stability timeout
+        if (Date.now() - stabilityStartTime > stabilityTimeout) {
+          console.error("[Background] Stability check timeout (30s). File may be locked or incomplete.");
+          return { success: false, error: "File stability timeout - file may be locked by antivirus or incomplete" };
+        }
+
+        // Check if we've exceeded max retries
+        if (retryCount >= maxStabilityRetries) {
+          console.error("[Background] Max stability retries reached. File access issues.");
+          return { success: false, error: "Max stability check retries reached - file access issues" };
+        }
+
         await new Promise(r => setTimeout(r, 1000));
+        retryCount++;
+
         try {
           const fileHandle = await sourceHandle.getFileHandle(newFile);
           const file = await fileHandle.getFile();
@@ -170,18 +198,26 @@ async function waitForDownloadAndRename(targetFilename) {
             lastSize = file.size;
           }
         } catch (e) {
-          console.log("[Background] File not ready yet...");
+          console.log(`[Background] File not ready yet (retry ${retryCount}/${maxStabilityRetries})...`);
           stableCount = 0;
+          // Don't reset lastSize on error - keep previous size for comparison
         }
       }
 
-      console.log(`[Background] File download complete: ${newFile} (${lastSize} bytes)`);
+      console.log(`[Background] File download complete: ${newFile} (${lastSize} bytes, ${retryCount} retries)`);
 
       // 3.5 Check Aspect Ratio (Replaces Size Check)
       try {
         const fileHandle = await sourceHandle.getFileHandle(newFile);
         const file = await fileHandle.getFile();
-        const bitmap = await self.createImageBitmap(file);
+
+        // Create bitmap with 10 second timeout to prevent hanging on corrupted files
+        const bitmap = await withTimeout(
+          self.createImageBitmap(file),
+          10000,
+          "Bitmap creation timeout - file may be corrupted"
+        );
+
         const width = bitmap.width;
         const height = bitmap.height;
         bitmap.close();
@@ -192,7 +228,7 @@ async function waitForDownloadAndRename(targetFilename) {
         // Check for 1:1 (Failure) - Tolerance 0.15
         if (Math.abs(ratio - 1.0) < 0.15) {
           console.error(`[Background] FAILURE: Image is ~1:1 (Ratio: ${ratio.toFixed(2)}). Gemini failed to generate landscape.`);
-          
+
           // Try to delete the failed file
           try {
             await sourceHandle.removeEntry(newFile);
@@ -200,10 +236,10 @@ async function waitForDownloadAndRename(targetFilename) {
           } catch (e) {
             console.warn("[Background] Could not delete file:", e);
           }
-          
-          return { 
-            success: false, 
-            error: `Image is square (1:1). Generation failed (expected 16:9). Workflow stopped.` 
+
+          return {
+            success: false,
+            error: `Image is square (1:1). Generation failed (expected 16:9). Workflow stopped.`
           };
         }
 
@@ -217,7 +253,11 @@ async function waitForDownloadAndRename(targetFilename) {
 
       } catch (e) {
         console.error("[Background] Aspect ratio check error:", e);
-        // We continue if check fails (don't block workflow due to check error, unless critical)
+        // If it's a timeout or critical error, fail the operation
+        if (e.message.includes("timeout") || e.message.includes("corrupted")) {
+          return { success: false, error: e.message };
+        }
+        // Otherwise continue if check fails (don't block workflow due to minor check errors)
       }
 
       // 4. Read file and calculate hash
