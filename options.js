@@ -14,25 +14,38 @@ const taskIntervalInput = document.getElementById('taskInterval');
 const saveSettingsBtn = document.getElementById('saveSettingsBtn');
 const saveStatus = document.getElementById('saveStatus');
 
+// Retry Inputs
+const maxRetriesInput = document.getElementById('maxRetries');
+const retryDelayInput = document.getElementById('retryDelay');
+const continueOnErrorInput = document.getElementById('continueOnError');
+const saveRetryBtn = document.getElementById('saveRetryBtn');
+const retrySaveStatus = document.getElementById('retrySaveStatus');
+
 // Default Values
 const DEFAULTS = {
     settings_generationTimeout: 300,
     settings_downloadTimeout: 120,
     settings_pageLoadTimeout: 30,
     settings_stepDelay: 1000,
-    settings_taskInterval: 2000
+    settings_taskInterval: 2000,
+    settings_maxRetries: 3,
+    settings_retryDelay: 5,
+    settings_continueOnError: true
 };
 
 // Load saved settings
 async function loadSettings() {
     const result = await chrome.storage.local.get([
-        'outputSubfolder', 
+        'outputSubfolder',
         'sourceSubfolder',
         'settings_generationTimeout',
         'settings_downloadTimeout',
         'settings_pageLoadTimeout',
         'settings_stepDelay',
-        'settings_taskInterval'
+        'settings_taskInterval',
+        'settings_maxRetries',
+        'settings_retryDelay',
+        'settings_continueOnError'
     ]);
 
     // Set Timing Inputs (or defaults)
@@ -41,6 +54,11 @@ async function loadSettings() {
     pageLoadTimeoutInput.value = result.settings_pageLoadTimeout || DEFAULTS.settings_pageLoadTimeout;
     stepDelayInput.value = result.settings_stepDelay || DEFAULTS.settings_stepDelay;
     taskIntervalInput.value = result.settings_taskInterval || DEFAULTS.settings_taskInterval;
+
+    // Set Retry Inputs (or defaults)
+    maxRetriesInput.value = result.settings_maxRetries !== undefined ? result.settings_maxRetries : DEFAULTS.settings_maxRetries;
+    retryDelayInput.value = result.settings_retryDelay || DEFAULTS.settings_retryDelay;
+    continueOnErrorInput.checked = result.settings_continueOnError !== undefined ? result.settings_continueOnError : DEFAULTS.settings_continueOnError;
 
     // Check Source Handle
     const sourceHandle = await getHandle('sourceHandle');
@@ -119,5 +137,26 @@ selectOutputBtn.addEventListener('click', async () => {
         outputStatus.className = 'status success';
     } catch (err) {
         console.error(err);
+    }
+});
+
+// Save Retry Settings
+saveRetryBtn.addEventListener('click', async () => {
+    try {
+        const retrySettings = {
+            settings_maxRetries: parseInt(maxRetriesInput.value, 10),
+            settings_retryDelay: parseInt(retryDelayInput.value, 10),
+            settings_continueOnError: continueOnErrorInput.checked
+        };
+
+        await chrome.storage.local.set(retrySettings);
+
+        retrySaveStatus.textContent = '✅ Retry Settings Saved!';
+        retrySaveStatus.className = 'status success';
+        setTimeout(() => { retrySaveStatus.textContent = ''; }, 3000);
+    } catch (err) {
+        console.error(err);
+        retrySaveStatus.textContent = '❌ Error Saving';
+        retrySaveStatus.className = 'status error';
     }
 });

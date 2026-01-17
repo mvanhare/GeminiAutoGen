@@ -39,6 +39,47 @@
       .catch(() => {});
   }
 
+  // Error classification helper
+  function classifyError(error) {
+    const message = error.message || error.toString();
+
+    // Fatal errors - should not retry
+    const fatalPatterns = [
+      /no task found/i,
+      /file system.*not supported/i,
+      /permission denied/i,
+      /access denied/i
+    ];
+
+    // Recoverable errors - can retry
+    const recoverablePatterns = [
+      /timeout/i,
+      /waiting for/i,
+      /not found/i,
+      /failed to fetch/i,
+      /network/i,
+      /generation.*failed/i,
+      /stability/i
+    ];
+
+    // Check for fatal errors
+    for (const pattern of fatalPatterns) {
+      if (pattern.test(message)) {
+        return { type: 'FATAL', message };
+      }
+    }
+
+    // Check for recoverable errors
+    for (const pattern of recoverablePatterns) {
+      if (pattern.test(message)) {
+        return { type: 'RECOVERABLE', message };
+      }
+    }
+
+    // Default to recoverable for unknown errors
+    return { type: 'RECOVERABLE', message };
+  }
+
   async function scrollToBottom() {
     window.scrollTo({ top: document.body.scrollHeight, behavior: "instant" });
     const containers = [
@@ -71,6 +112,7 @@
       chrome.runtime.sendMessage({
         action: "TASK_ERROR",
         error: "No task found",
+        errorType: "FATAL"
       });
       return;
     }
@@ -292,7 +334,12 @@
     chrome.runtime.sendMessage({ action: "TASK_COMPLETE", skipped: false });
   } catch (err) {
     console.error("[Content] Error:", err);
-    updateStatus(`Error: ${err.message}`, true);
-    chrome.runtime.sendMessage({ action: "TASK_ERROR", error: err.message });
+    const errorInfo = classifyError(err);
+    updateStatus(`Error: ${errorInfo.message}`, true);
+    chrome.runtime.sendMessage({
+      action: "TASK_ERROR",
+      error: errorInfo.message,
+      errorType: errorInfo.type
+    });
   }
 })();

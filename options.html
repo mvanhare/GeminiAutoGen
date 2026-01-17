@@ -173,6 +173,33 @@
             <div id="saveStatus" class="status"></div>
         </div>
 
+        <div class="section">
+            <h3>3. Error Handling & Retry Settings</h3>
+
+            <div class="form-group">
+                <label for="maxRetries">Max Retry Attempts</label>
+                <div class="help-text">Number of times to retry a failed task before skipping (Default: 3). Set to 0 to disable retries.</div>
+                <input type="number" id="maxRetries" min="0" max="10" value="3">
+            </div>
+
+            <div class="form-group">
+                <label for="retryDelay">Retry Base Delay (seconds)</label>
+                <div class="help-text">Base delay before retrying (Default: 5). Uses exponential backoff: 5s, 10s, 20s, etc.</div>
+                <input type="number" id="retryDelay" min="1" max="60" value="5">
+            </div>
+
+            <div class="form-group">
+                <label for="continueOnError" style="display: flex; align-items: center; gap: 10px;">
+                    <input type="checkbox" id="continueOnError" checked>
+                    Continue to next task after max retries
+                </label>
+                <div class="help-text">If checked, continues with remaining tasks after a task fails. If unchecked, stops the entire workflow.</div>
+            </div>
+
+            <button id="saveRetryBtn" style="margin-top: 10px;">Save Retry Settings</button>
+            <div id="retrySaveStatus" class="status"></div>
+        </div>
+
     </div>
     <script type="module" src="options.js"></script>
 </body>
